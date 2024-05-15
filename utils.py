@@ -8,6 +8,13 @@ from rouge import Rouge
 import torch.nn.functional as F
 from tqdm import tqdm
 
+def setup(rank, world_size):
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+
+def cleanup():
+    dist.destroy_process_group()
+    
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -16,7 +23,7 @@ def train(model, data_loader, optimizer, criterion, device):
     total_loss = 0
     count=0
     for batch in tqdm(data_loader):
-        if count>=50:
+        if count>=10:
             break
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
@@ -24,15 +31,13 @@ def train(model, data_loader, optimizer, criterion, device):
 
         optimizer.zero_grad()
         outputs = model(input_ids)
-
-
         loss = criterion(outputs.view(-1, outputs.size(-1)), answer_ids.view(-1))
         loss.backward()
         optimizer.step()
         count+=1
         total_loss += loss.item()
 
-    return total_loss / len(data_loader)
+    return total_loss / count
 
 def evaluate(model, data_loader, criterion, device, tokenizer):
     model.eval()
@@ -52,18 +57,21 @@ def evaluate(model, data_loader, criterion, device, tokenizer):
             answer_ids = batch['answer_ids'].to(device)
 
             outputs = model(input_ids)
-            #print(outputs.shape,answer_ids.shape) torch.Size([8, 512, 50280]) torch.Size([8, 512])
-            loss = criterion(outputs.view(-1, outputs.size(-1)), answer_ids.view(-1))
+          
+            loss = criterion(outputs.reshape(-1, outputs.size(-1)), answer_ids.view(-1))
             total_loss += loss.item()
             count+=1
             outputs = torch.argmax(outputs, dim=-1)
+            #print(outputs) # torch.Size([8, 512, 50280]) torch.Size([8, 512])
             for output, answer_id in zip(outputs, answer_ids):
+                #print(answer_id,output)
                 ref = tokenizer.decode(answer_id, skip_special_tokens=True)
                 pred = tokenizer.decode(output, skip_special_tokens=True)
-
+                #print(ref)
+                #print(pred)
                 ref_words = ref.split()
                 pred_words = pred.split()
-                #print(ref_words.size(),pred_words.size())
+                #print(ref_words,pred_words)
                 bleu = sentence_bleu([ref_words], pred_words, smoothing_function=SmoothingFunction().method1)
                 met = meteor_score([ref_words], pred_words)
                 bleu_scores.append(bleu)
@@ -75,22 +83,19 @@ def evaluate(model, data_loader, criterion, device, tokenizer):
                     rouge_scores.append(rouge_f1)
                 except ValueError:
                     rouge_scores.append(0)
+            
 
-                # MRR for multiple correct answers, adjust accordingly)
-                rank = 1 if pred == ref else 0
-                mrr_score = 1.0 / (rank + 1) if rank else 0
-                mrr_scores.append(mrr_score)
+                print(count,f"Loss: {loss.item()}, Avg BLEU: {bleu}, Avg METEOR: {met}, Avg ROUGE: {rouge_f1}")
 
-    avg_loss = total_loss / len(data_loader)
-    avg_bleu = sum(bleu_scores) / len(bleu_scores)
-    avg_meteor = sum(meteor_scores) / len(meteor_scores)
-    avg_rouge = sum(rouge_scores) / len(rouge_scores)
-    avg_mrr = sum(mrr_scores) / len(mrr_scores)
-    print(f"Avg Loss: {avg_loss}, Avg BLEU: {avg_bleu}, Avg METEOR: {avg_meteor}, Avg ROUGE: {avg_rouge}, Avg MRR: {avg_mrr}")
-    return avg_loss, avg_bleu, avg_meteor, avg_rouge, avg_mrr
+    avg_loss = total_loss / count
+    avg_bleu = sum(bleu_scores) / count
+    avg_meteor = sum(meteor_scores) / count
+    avg_rouge = sum(rouge_scores) / count
+    print(f"Avg Loss: {avg_loss}, Avg BLEU: {avg_bleu}, Avg METEOR: {avg_meteor}, Avg ROUGE: {avg_rouge}")
+    return avg_loss, avg_bleu, avg_meteor, avg_rouge
 
 
-def generate(model,tokenizer,prompt: str,n_tokens: int = 50,
+def generate(model,tokenizer,prompt: str,n_tokens: int = 100,
             sample: bool = True,
             top_k: int = 40,device='cuda'):
     model.eval()
@@ -190,15 +195,11 @@ def evaluate_tf(model, data_loader, criterion, device, tokenizer):
                 except ValueError:
                     rouge_scores.append(0)
 
-                # MRR for multiple correct answers, adjust accordingly)
-                rank = 1 if pred == ref else 0
-                mrr_score = 1.0 / (rank + 1) if rank else 0
-                mrr_scores.append(mrr_score)
 
     avg_loss = total_loss / count
     avg_bleu = sum(bleu_scores) / count
     avg_meteor = sum(meteor_scores) / count
     avg_rouge = sum(rouge_scores) / count
-    avg_mrr = sum(mrr_scores) / count
-    print(f"Avg Loss: {avg_loss}, Avg BLEU: {avg_bleu}, Avg METEOR: {avg_meteor}, Avg ROUGE: {avg_rouge}, Avg MRR: {avg_mrr}")
-    return avg_loss, avg_bleu, avg_meteor, avg_rouge, avg_mrr
+    print(f"Avg Loss: {avg_loss}, Avg BLEU: {avg_bleu}, Avg METEOR: {avg_meteor}, Avg ROUGE: {avg_rouge}")
+    return avg_loss, avg_bleu, avg_meteor, avg_rouge
+
