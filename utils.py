@@ -4,7 +4,6 @@ from nltk.translate.meteor_score import meteor_score
 from rouge import Rouge
 import numpy as np
 import os
-from rouge import Rouge
 import torch.nn.functional as F
 from tqdm import tqdm
 
