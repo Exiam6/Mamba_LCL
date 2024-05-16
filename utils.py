@@ -6,6 +6,10 @@ import numpy as np
 import os
 import torch.nn.functional as F
 from tqdm import tqdm
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 
 def setup(rank, world_size):
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
